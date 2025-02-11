@@ -1,126 +1,96 @@
 import pandas as pd
-import numpy as np
-from datetime import datetime
 from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import mean_squared_error, accuracy_score, precision_score, recall_score, classification_report
+import matplotlib.pyplot as plt
 
-# ------------------------------------------------------------------------------
-# PROJECT OBJECTIVES AND METHODOLOGY:
-# ------------------------------------------------------------------------------
-# 1. Identify a supervised problem task:
-#    - We are solving a regression task: predicting the continuous value (stock's 
-#      closing price) based on date.
-#
-# 2. Select a labeled dataset:
-#    - We use 'goog.csv', a dataset available on Kaggle that includes historical
-#      stock data (dates, open, high, low, close, volume, etc.) for Google.
-#
-# 3. Overview of the data:
-#    - Size: 1,258 rows and 14 columns.
-#    - Features: date, open, high, low, close, volume, and others.
-#    - Output Label: 'close' (the stock’s closing price).
-#
-# 4. Task's Nature:
-#    - This is a regression problem.
-#
-# 5. Model Architecture and Loss Function:
-#    - We use a Linear Regression model.
-#    - The model minimizes the Mean Squared Error (MSE) during training.
-#
-# 6. Training Process Implementation:
-#    - Data is preprocessed by converting dates to a numerical (ordinal) format.
-#    - The dataset is split into training (80%) and testing (20%) sets.
-#    - The Linear Regression model is trained with default hyperparameters.
-#
-# 7. Model Evaluation:
-#    - The trained model is evaluated using RMSE (Root Mean Squared Error).
-#
-# 8. Additional Requirement:
-#    - The model accepts an input date (target date) for prediction.
-#    - It then compares the predicted price on that target date with the predicted
-#      price for your current date (here taken as the latest date in the dataset)
-#      and decides if it is worth investing.
-# ------------------------------------------------------------------------------
+# Load the dataset
+file_path = "world_gdp_data.csv"
+df = pd.read_csv(file_path, encoding="latin1")
 
-# 1. Load the dataset (ensure 'goog.csv' is in the same directory)
-df = pd.read_csv("goog.csv")
+# Trim spaces from column names
+df.columns = df.columns.str.strip()
 
-# 2. Data Overview: Display structure and sample rows
-print("Data Information:")
-print(df.info())
-print("\nSample Data:")
-print(df.head())
+# Remove the "indicator" column if it exists
+if "indicator" in df.columns:
+    df.drop(columns=["indicator"], inplace=True)
 
-# 3. Preprocess the Data
-# Convert the 'date' column to a datetime object.
-df['date'] = pd.to_datetime(df['date'])
+# Convert dataset from wide to long format
+df_long = pd.melt(df, id_vars=["country_name"], var_name="Year", value_name="GDP_Growth")
 
-# For our regression, we transform the date into a numerical feature using its ordinal.
-df['date_ordinal'] = df['date'].apply(lambda x: x.toordinal())
+# Convert Year & GDP Growth to numeric
+df_long["Year"] = pd.to_numeric(df_long["Year"], errors="coerce")
+df_long["GDP_Growth"] = pd.to_numeric(df_long["GDP_Growth"], errors="coerce")
 
-# 4. Define features and target variable.
-# Here, we use the numerical representation of the date as our single feature.
-X = df[['date_ordinal']]
-y = df['close']
+# Drop rows with missing values
+df_long.dropna(subset=["GDP_Growth", "Year"], inplace=True)
 
-# 5. Split the dataset into training and testing sets (80% training, 20% testing).
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+# Convert Year to 10-Year Groups
+df_long["Year_Grouped"] = (df_long["Year"] // 10) * 10
 
-# 6. Initialize and train the Linear Regression model.
-model = LinearRegression()
-model.fit(X_train, y_train)
+# Average GDP Growth for each 10-Year period
+df_grouped = df_long.groupby(["country_name", "Year_Grouped"]) ["GDP_Growth"].mean().reset_index()
 
-# 7. Evaluate the model on the test set.
-y_pred = model.predict(X_test)
-mse = mean_squared_error(y_test, y_pred)
-rmse = np.sqrt(mse)
-print("\nModel Evaluation:")
-print(f"Mean Squared Error (MSE): {mse:.2f}")
-print(f"Root Mean Squared Error (RMSE): {rmse:.2f}")
-
-# 8. Function to predict the stock price for a given date using the trained model.
-def predict_stock_price(input_date):
+def train_model_for_country(country: str):
     """
-    Predicts the closing stock price for a given date.
-    
-    Parameters:
-        input_date (str or datetime): The date for which to predict the price.
-        
-    Returns:
-        float: The predicted closing price.
+    Trains a model for a specific country.
     """
-    # Ensure the input_date is in datetime format.
-    if isinstance(input_date, str):
-        input_date = pd.to_datetime(input_date)
-        
-    # Convert date to its ordinal representation.
-    date_ordinal = np.array([[input_date.toordinal()]])
-    
-    # Predict the closing price.
-    predicted_price = model.predict(date_ordinal)[0]
-    return predicted_price
+    df_country = df_grouped[df_grouped["country_name"] == country]
+    X = df_country[["Year_Grouped"]]
+    y = df_country["GDP_Growth"]
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    pipeline = Pipeline(steps=[("regressor", LinearRegression())])
+    pipeline.fit(X_train, y_train)
+    mse = mean_squared_error(y_test, pipeline.predict(X_test))
+    print(f"Mean Squared Error for {country}: {mse:.4f}")
+    return pipeline, X_test, y_test
 
-# 9. Get the target date input from the user.
-# This is the date for which you want a price prediction.
-input_date_str = input("Enter the target date (YYYY-MM-DD) for prediction: ")
-target_date = pd.to_datetime(input_date_str)
+def predict_gdp_growth(pipeline, year: int) -> float:
+    """
+    Predicts the GDP growth rate for a given year.
+    """
+    year_grouped = (year // 10) * 10
+    input_df = pd.DataFrame({"Year_Grouped": [year_grouped]})
+    prediction = pipeline.predict(input_df)
+    return round(prediction[0], 2)
 
-# 10. Define the 'current date' for comparison.
-# For consistency, we use the latest date available in the dataset as your current date.
-current_date = df['date'].max()
+def evaluate_model(pipeline, X_test, y_test):
+    """
+    Evaluates the model using Accuracy, Precision, Recall, and MSE.
+    """
+    y_pred = pipeline.predict(X_test)
+    mse = mean_squared_error(y_test, y_pred)
+    y_test_binary = (y_test > 0).astype(int)
+    y_pred_binary = (y_pred > 0).astype(int)
+    accuracy = accuracy_score(y_test_binary, y_pred_binary)
+    precision = precision_score(y_test_binary, y_pred_binary, zero_division=0)
+    recall = recall_score(y_test_binary, y_pred_binary, zero_division=0)
+    report = classification_report(y_test_binary, y_pred_binary, target_names=["Negative Growth", "Positive Growth"], labels=[0, 1], zero_division=0)
+    print("\nClassification Report:\n", report)
+    return {"Accuracy": accuracy, "Precision": precision, "Recall": recall, "MSE": mse}
 
-# 11. Predict prices for both the target date and current date.
-predicted_target_price = predict_stock_price(target_date)
-predicted_current_price = predict_stock_price(current_date)
+# Example Usage
+example_country = "Germany"
+example_year = 2015
+pipeline, X_test, y_test = train_model_for_country(example_country)
+predicted_growth = predict_gdp_growth(pipeline, example_year)
+print(f"\nPredicted GDP Growth for {example_country} in {example_year}: {predicted_growth}%")
 
-print("\nPredicted Prices:")
-print(f"Predicted Price for your target date ({target_date.date()}): ${predicted_target_price:.2f}")
-print(f"Predicted Price for current date ({current_date.date()}): ${predicted_current_price:.2f}")
+# Evaluate Model
+metrics = evaluate_model(pipeline, X_test, y_test)
+print("\nEvaluation Metrics:", metrics)
 
-# 12. Investment Decision Logic:
-#    - Invest if the predicted price for the target date is higher than that for your current date.
-if predicted_target_price > predicted_current_price:
-    print("Investment Decision: Invest")
-else:
-    print("Investment Decision: Do not invest")
+# Plotting Results
+years = list(range(1980, 2040, 10))
+predicted_gdp_growth = [predict_gdp_growth(pipeline, year) for year in years]
+actual_gdp_growth = df_grouped[df_grouped["country_name"] == example_country].set_index("Year_Grouped").reindex(years)["GDP_Growth"]
+plt.figure(figsize=(10, 6))
+plt.plot(years, predicted_gdp_growth, marker='o', label='Predicted GDP Growth')
+plt.plot(years, actual_gdp_growth, marker='x', label='Actual Average GDP Growth', linestyle='--')
+plt.xlabel('Year')
+plt.ylabel('GDP Growth')
+plt.title(f'Predicted vs Actual Average GDP Growth for {example_country} (10-Year Intervals)')
+plt.legend()
+plt.grid(True)
+plt.show()
